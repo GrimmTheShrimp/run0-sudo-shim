@@ -50,15 +50,15 @@ pub struct SudoCli {
     #[clap(long, short = 'i', default_value_t = false)]
     pub login: bool,
 
-    /// [UNSUPPORTED] remove timestamp file completely
+    /// remove timestamp file completely
     #[clap(long, short = 'K', default_value_t = false)]
     pub remove_timestamp: bool,
 
-    /// [UNSUPPORTED] invalidate timestamp file
+    /// invalidate timestamp file
     #[clap(long, short = 'k', default_value_t = false)]
     pub reset_timestamp: bool,
 
-    /// [UNSUPPORTED] list user's privileges or check a specific command; use twice for longer format
+    /// check a specific command; listing privileges is unsupported
     #[clap(long, short = 'l', action = ArgAction::Count)]
     pub list: u8,
 

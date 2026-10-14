@@ -103,7 +103,24 @@ pub fn parse_to_run0_cli(
         return Err(Error::Unsupported(String::from("--edit")));
     }
 
-    if cli.list > 0 || cli.other_user.is_some() {
+    let mut env_var_prefix_split_idx: usize = 0;
+    for arg in cli.command.iter().flat_map(|args| args.iter()) {
+        if arg.contains("=") && !arg.starts_with("=") && !arg.starts_with("/") {
+            env_var_prefix_split_idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    let (extra_env_vars, command) = if let Some(command) = &cli.command {
+        command.split_at(env_var_prefix_split_idx)
+    } else {
+        (&[] as &[String], &[] as &[String])
+    };
+
+    // listing privileges would need sudoers, so only `-l <command>` is supported
+    let list_mode = cli.list > 0;
+    if cli.other_user.is_some() || (list_mode && command.is_empty()) {
         return Err(Error::Unsupported(String::from("list mode")));
     }
 
@@ -111,10 +128,11 @@ pub fn parse_to_run0_cli(
         return Err(Error::Unsupported(String::from("--chroot")));
     }
 
-    if cli.remove_timestamp || cli.reset_timestamp {
-        // potential solution: call RevokeTemporaryAuthorizations on org.freedesktop.PolicyKit1.Authority dbus
-        return Err(Error::Unsupported(String::from(
-            "removing or resetting authentication timestamps",
+    if cli.remove_timestamp
+        && (cli.command.is_some() || cli.validate || list_mode || cli.shell || cli.login)
+    {
+        return Err(Error::InvalidUsage(String::from(
+            "-K cannot be used with a command or with -i, -l, -s or -v",
         )));
     }
 
@@ -170,6 +188,12 @@ pub fn parse_to_run0_cli(
         buf.cli.push(String::from("--no-ask-password"))
     }
 
+    if cli.remove_timestamp {
+        buf.cli.push(String::from("--remove-timestamp"))
+    } else if cli.reset_timestamp {
+        buf.cli.push(String::from("--reset-timestamp"))
+    }
+
     if let Some(user) = cli.user {
         // FIXME: handle numerics safely
         buf.cli
@@ -183,21 +207,6 @@ pub fn parse_to_run0_cli(
         buf.cli
             .push(format!("--group={}", group.trim_start_matches('#')))
     }
-
-    let mut env_var_prefix_split_idx: usize = 0;
-    for arg in cli.command.iter().flat_map(|args| args.iter()) {
-        if arg.contains("=") && !arg.starts_with("=") && !arg.starts_with("/") {
-            env_var_prefix_split_idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    let (extra_env_vars, command) = if let Some(command) = &cli.command {
-        command.split_at(env_var_prefix_split_idx)
-    } else {
-        (&[] as &[String], &[] as &[String])
-    };
 
     let env_var_flags = extra_env_vars
         .iter()
@@ -230,11 +239,14 @@ pub fn parse_to_run0_cli(
     buf.cli.extend(cli.run0_extra_args);
     buf.cli.push(String::from("--"));
 
-    if cli.validate {
+    if cli.validate || list_mode {
         buf.cli.push(String::from(TRUE_CMD));
+        if list_mode {
+            buf.list_command = Some(command.to_vec());
+        }
     } else if !command.is_empty() {
         buf.cli.extend(command.to_vec());
-    } else if !(cli.shell || cli.login) {
+    } else if !(cli.shell || cli.login || cli.reset_timestamp || cli.remove_timestamp) {
         return Err(Error::PrintHelp);
     }
 
@@ -607,6 +619,87 @@ mod tests {
     }
 
     #[test]
+    fn test_reset_timestamp_bare() {
+        let cli = Cli::parse_from(["sudo", "-k"]);
+        let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
+        assert_eq!(
+            build_result,
+            ShimResult::ok_from(vec![
+                String::from(RUN0_CMD),
+                String::from("--reset-timestamp"),
+                String::from("--"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_remove_timestamp_bare() {
+        let cli = Cli::parse_from(["sudo", "-K"]);
+        let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
+        assert_eq!(
+            build_result,
+            ShimResult::ok_from(vec![
+                String::from(RUN0_CMD),
+                String::from("--remove-timestamp"),
+                String::from("--"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_reset_timestamp_with_command() {
+        let cli = Cli::parse_from(["sudo", "-k", "prog"]);
+        let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
+        assert_eq!(
+            build_result,
+            ShimResult::ok_from(vec![
+                String::from(RUN0_CMD),
+                String::from("--reset-timestamp"),
+                String::from("--"),
+                String::from("prog"),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_list_command() {
+        let cli = Cli::parse_from(["sudo", "-n", "-l", "mkdir", "-p"]);
+        let res = cli.parse_to_run0_cli(None, 1000, vec![]).res.unwrap();
+        assert_eq!(
+            res.cli,
+            vec![
+                String::from(RUN0_CMD),
+                String::from("--no-ask-password"),
+                String::from("--"),
+                String::from(TRUE_CMD),
+            ]
+        );
+        assert_eq!(
+            res.list_command,
+            Some(vec![String::from("mkdir"), String::from("-p")])
+        );
+    }
+
+    #[test]
+    fn test_resolve_command() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let dir = std::env::temp_dir().join(format!("run0-sudo-shim-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("foo");
+        fs::write(&exe, "").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(dir.join("bar"), "").unwrap();
+
+        let path = dir.as_os_str();
+        assert_eq!(resolve_command("foo", Some(path)), Some(exe.clone()));
+        assert_eq!(resolve_command("bar", Some(path)), None);
+        assert_eq!(resolve_command(exe.to_str().unwrap(), None), Some(exe));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_extra_arg() {
         let cli = Cli::parse_from(["sudo", "--run0-extra-arg=--background=42", "prog"]);
         let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
@@ -660,27 +753,10 @@ mod unsupported {
     }
 
     #[test]
-    fn test_remove_timestamp_unsupported() {
-        let cli = Cli::parse_from(["sudo", "-K"]);
+    fn test_remove_timestamp_with_command() {
+        let cli = Cli::parse_from(["sudo", "-K", "prog"]);
         let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
-        assert_eq!(
-            build_result,
-            Err(Error::Unsupported(String::from(
-                "removing or resetting authentication timestamps"
-            )))
-        );
-    }
-
-    #[test]
-    fn test_reset_timestamp_unsupported() {
-        let cli = Cli::parse_from(["sudo", "-k"]);
-        let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
-        assert_eq!(
-            build_result,
-            Err(Error::Unsupported(String::from(
-                "removing or resetting authentication timestamps"
-            )))
-        );
+        assert!(matches!(build_result, Err(Error::InvalidUsage(_))));
     }
 
     #[test]

@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::{fmt::Display, process::exit};
+use std::{
+    ffi::OsStr,
+    fmt::Display,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::exit,
+};
 
 pub static POLKIT_STDIN_AGENT: &str = match option_env!("POLKIT_STDIN_AGENT") {
     Some(x) => x,
@@ -22,10 +29,25 @@ pub fn die(msg: &str) -> ! {
     exit(1)
 }
 
+fn is_executable(p: &Path) -> bool {
+    fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+pub fn resolve_command(cmd: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    if cmd.contains('/') {
+        let p = PathBuf::from(cmd);
+        return is_executable(&p).then_some(p);
+    }
+    std::env::split_paths(path?)
+        .map(|dir| dir.join(cmd))
+        .find(|p| is_executable(p))
+}
+
 #[derive(PartialEq, Eq, Debug)]
 #[allow(dead_code)]
 pub enum Error {
     Unsupported(String),
+    InvalidUsage(String),
     UnknownUser(String),
     UnknownGroup(String),
     PrintHelp,
@@ -37,6 +59,7 @@ impl Display for Error {
             Self::Unsupported(feat) => {
                 f.write_fmt(format_args!("{} is currently unsupported", feat))
             }
+            Self::InvalidUsage(msg) => f.write_str(msg),
             Self::PrintHelp => f.write_str(""), // FIXME
             Error::UnknownUser(u) => f.write_fmt(format_args!("unknown user: {u}")),
             Error::UnknownGroup(g) => f.write_fmt(format_args!("unknown group: {g}")),
@@ -49,6 +72,7 @@ impl std::error::Error for Error {}
 #[derive(Debug, Eq, PartialEq)]
 pub struct ShimResult {
     pub cli: Vec<String>,
+    pub list_command: Option<Vec<String>>,
     stderr: String,
     stdout: String,
 }
@@ -57,6 +81,7 @@ impl ShimResult {
     pub fn new() -> Self {
         Self {
             cli: Vec::new(),
+            list_command: None,
             stderr: String::new(),
             stdout: String::new(),
         }
@@ -66,6 +91,7 @@ impl ShimResult {
     pub fn ok_from(cli: Vec<String>) -> Result<Self, Error> {
         Ok(Self {
             cli,
+            list_command: None,
             stderr: String::new(),
             stdout: String::new(),
         })
@@ -101,7 +127,7 @@ impl Run0Cli {
     }
 
     // CAN EXIT(1)
-    pub fn finalize(mut self) -> Vec<String> {
+    pub fn finalize(mut self) -> (Vec<String>, Option<Vec<String>>) {
         let res = match self.res {
             Ok(res) => res,
             Err(e) => match e {
@@ -118,6 +144,6 @@ impl Run0Cli {
         if !res.stdout.is_empty() {
             println!("{}", res.stdout);
         }
-        res.cli
+        (res.cli, res.list_command)
     }
 }

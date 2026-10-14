@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::{env, os::unix::process::CommandExt, process::Command};
+use std::{
+    env,
+    os::unix::process::CommandExt,
+    process::{Command, exit},
+};
 
 use clap::Parser;
 use users::get_current_uid;
@@ -37,12 +41,30 @@ fn main() {
 
     let env = env::vars().map(|(key, _)| key).collect();
 
-    let mut cli = cli
+    let (cli, list_command) = cli
         .parse_to_run0_cli(cwd, get_current_uid(), env)
-        .finalize()
-        .into_iter();
+        .finalize();
+    let mut cli = cli.into_iter();
 
     let program = cli.next().unwrap_or_else(|| die("unable to construct cli"));
+
+    if let Some(mut list_command) = list_command {
+        let name = &list_command[0];
+        let resolved = resolve_command(name, env::var_os("PATH").as_deref())
+            .unwrap_or_else(|| die(&format!("{name}: command not found")));
+
+        let status = Command::new(program)
+            .args(cli)
+            .status()
+            .unwrap_or_else(|e| die(&format!("failed to execute run0: {e}")));
+        if !status.success() {
+            exit(1);
+        }
+
+        list_command[0] = resolved.to_string_lossy().into_owned();
+        println!("{}", list_command.join(" "));
+        exit(0);
+    }
 
     let error = Command::new(program).args(cli).exec();
 
