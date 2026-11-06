@@ -30,8 +30,9 @@ This shim will never read `/etc/sudoers`. The shim is unprivileged:
 It does not have read privileges on `/etc/sudoers`,
 and can not effectively enforce security against the user executing the shim.
 
-Security features of sudo that are unsupported (such as `--remove-timestamp`/`--reset-timestamp`)
+Security features of sudo that are unsupported (such as `--preserve-groups`)
 will exit and emit an error on `stderr`, as to not suggest security actions have succeeded despite not being run at all.
+`-k`/`-K` require systemd 262 or newer.
 
 `sudoedit`/`sudo -e` is currently not supported. Supporting this safely is quite complex, and may happen in a future version of this shim.
 
@@ -74,9 +75,9 @@ Options:
   -i, --login
           run login shell as the target user; a command may also be specified
   -K, --remove-timestamp
-          [UNSUPPORTED] remove timestamp file completely
+          remove timestamp file completely
   -k, --reset-timestamp
-          [UNSUPPORTED] invalidate timestamp file
+          invalidate timestamp file
   -l, --list...
           [UNSUPPORTED] list user's privileges or check a specific command; use twice for longer format
   -n, --non-interactive

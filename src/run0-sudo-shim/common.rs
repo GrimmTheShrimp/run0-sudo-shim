@@ -26,6 +26,7 @@ pub fn die(msg: &str) -> ! {
 #[allow(dead_code)]
 pub enum Error {
     Unsupported(String),
+    InvalidUsage(String),
     UnknownUser(String),
     UnknownGroup(String),
     PrintHelp,
@@ -37,6 +38,7 @@ impl Display for Error {
             Self::Unsupported(feat) => {
                 f.write_fmt(format_args!("{} is currently unsupported", feat))
             }
+            Self::InvalidUsage(msg) => f.write_str(msg),
             Self::PrintHelp => f.write_str(""), // FIXME
             Error::UnknownUser(u) => f.write_fmt(format_args!("unknown user: {u}")),
             Error::UnknownGroup(g) => f.write_fmt(format_args!("unknown group: {g}")),
