@@ -34,6 +34,9 @@ Security features of sudo that are unsupported (such as `--preserve-groups`)
 will exit and emit an error on `stderr`, as to not suggest security actions have succeeded despite not being run at all.
 `-k`/`-K` require systemd 262 or newer.
 
+`sudo -l <command>` is supported. Listing all privileges is not, as that would require reading `/etc/sudoers`.
+This only checks that `run0` can be used at all, not the specific command.
+
 `sudoedit`/`sudo -e` is currently not supported. Supporting this safely is quite complex, and may happen in a future version of this shim.
 
 `sudo -E` (preserving environment without an explicit list) strips some potentially dangerous environment variables.
@@ -79,7 +82,7 @@ Options:
   -k, --reset-timestamp
           invalidate timestamp file
   -l, --list...
-          [UNSUPPORTED] list user's privileges or check a specific command; use twice for longer format
+          check a specific command; listing privileges is unsupported
   -n, --non-interactive
           non-interactive mode, no prompts are used
   -P, --preserve-groups

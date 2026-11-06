@@ -103,15 +103,40 @@ pub fn parse_to_run0_cli(
         return Err(Error::Unsupported(String::from("--edit")));
     }
 
-    if cli.list > 0 || cli.other_user.is_some() {
+    let mut env_var_prefix_split_idx: usize = 0;
+    for arg in cli.command.iter().flat_map(|args| args.iter()) {
+        if arg.contains("=") && !arg.starts_with("=") && !arg.starts_with("/") {
+            env_var_prefix_split_idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    let (extra_env_vars, command) = if let Some(command) = &cli.command {
+        command.split_at(env_var_prefix_split_idx)
+    } else {
+        (&[] as &[String], &[] as &[String])
+    };
+
+    // listing privileges would need sudoers, so only `-l <command>` is supported
+    let list_mode = cli.list > 0;
+    if cli.other_user.is_some() || (list_mode && command.is_empty()) {
         return Err(Error::Unsupported(String::from("list mode")));
+    }
+    // run0 does not resolve the command itself in these cases
+    if list_mode && (cli.shell || cli.login || !cli.run0_extra_args.is_empty()) {
+        return Err(Error::Unsupported(String::from(
+            "-l <command> together with -s, -i or --run0-extra-arg",
+        )));
     }
 
     if cli.chroot.is_some() {
         return Err(Error::Unsupported(String::from("--chroot")));
     }
 
-    if cli.remove_timestamp && (cli.command.is_some() || cli.validate || cli.shell || cli.login) {
+    if cli.remove_timestamp
+        && (cli.command.is_some() || cli.validate || list_mode || cli.shell || cli.login)
+    {
         return Err(Error::InvalidUsage(String::from(
             "-K cannot be used with a command or with -i, -l, -s or -v",
         )));
@@ -189,21 +214,6 @@ pub fn parse_to_run0_cli(
             .push(format!("--group={}", group.trim_start_matches('#')))
     }
 
-    let mut env_var_prefix_split_idx: usize = 0;
-    for arg in cli.command.iter().flat_map(|args| args.iter()) {
-        if arg.contains("=") && !arg.starts_with("=") && !arg.starts_with("/") {
-            env_var_prefix_split_idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    let (extra_env_vars, command) = if let Some(command) = &cli.command {
-        command.split_at(env_var_prefix_split_idx)
-    } else {
-        (&[] as &[String], &[] as &[String])
-    };
-
     let env_var_flags = extra_env_vars
         .iter()
         .cloned()
@@ -235,8 +245,11 @@ pub fn parse_to_run0_cli(
     buf.cli.extend(cli.run0_extra_args);
     buf.cli.push(String::from("--"));
 
-    if cli.validate {
+    if cli.validate || list_mode {
         buf.cli.push(String::from(TRUE_CMD));
+        if list_mode {
+            buf.list_command = Some(command.to_vec());
+        }
     } else if !command.is_empty() {
         buf.cli.extend(command.to_vec());
     } else if !(cli.shell || cli.login || cli.reset_timestamp || cli.remove_timestamp) {
@@ -248,6 +261,8 @@ pub fn parse_to_run0_cli(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use clap::Parser;
 
     use super::*;
@@ -652,6 +667,86 @@ mod tests {
                 String::from("prog"),
             ])
         );
+    }
+
+    #[test]
+    fn test_list_command() {
+        let cli = Cli::parse_from(["sudo", "-n", "-l", "mkdir", "-p"]);
+        let res = cli.parse_to_run0_cli(None, 1000, vec![]).res.unwrap();
+        assert_eq!(
+            res.cli,
+            vec![
+                String::from(RUN0_CMD),
+                String::from("--no-ask-password"),
+                String::from("--"),
+                String::from(TRUE_CMD),
+            ]
+        );
+        assert_eq!(
+            res.list_command,
+            Some(vec![String::from("mkdir"), String::from("-p")])
+        );
+    }
+
+    #[test]
+    fn test_resolve_command() {
+        use std::{ffi::OsString, fs, os::unix::fs::PermissionsExt, path::Path};
+
+        let base = std::env::temp_dir().join(format!("run0-sudo-shim-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let mk = |p: &Path, mode| {
+            fs::write(p, "").unwrap();
+            fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+        };
+        mk(&a.join("foo"), 0o755);
+        mk(&a.join("bar"), 0o644);
+        mk(&b.join("bar"), 0o755);
+        fs::create_dir_all(a.join("dir")).unwrap();
+        fs::set_permissions(a.join("dir"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path: OsString = std::env::join_paths([&a, &b]).unwrap();
+        let path = Some(path.as_os_str());
+        assert_eq!(resolve_command("foo", path, None), Some(a.join("foo")));
+        assert_eq!(resolve_command("bar", path, None), Some(b.join("bar")));
+        assert_eq!(resolve_command("dir", path, None), None);
+        assert_eq!(resolve_command("missing", path, None), None);
+
+        assert_eq!(
+            resolve_command("foo", Some(OsStr::new(":.:a")), Some(&base)),
+            None
+        );
+
+        let messy = format!("{}//./foo", a.display());
+        assert_eq!(resolve_command(&messy, None, None), Some(a.join("foo")));
+        assert_eq!(
+            resolve_command(&format!("{}/missing", a.display()), None, None),
+            None
+        );
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn test_list_command_rejects_unresolvable_modes() {
+        for args in [
+            &["sudo", "-l", "-s", "prog"][..],
+            &["sudo", "-l", "-i", "prog"][..],
+            &[
+                "sudo",
+                "-l",
+                "--run0-extra-arg=--property=ExecSearchPath=/x",
+                "prog",
+            ][..],
+        ] {
+            let cli = Cli::parse_from(args);
+            let build_result = cli.parse_to_run0_cli(None, 1000, vec![]).res;
+            assert!(
+                matches!(build_result, Err(Error::Unsupported(_))),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ clap = {version = "4.5.4", features = ["derive"]}
 
 [dependencies]
 clap = {version = "4.5.4", features = ["derive"]}
+rustix = {version = "1", features = ["fs"]}
 users = {version = "0.11.0", default-features = false}
 
 [package]

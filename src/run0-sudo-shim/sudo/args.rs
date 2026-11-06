@@ -58,7 +58,7 @@ pub struct SudoCli {
     #[clap(long, short = 'k', default_value_t = false)]
     pub reset_timestamp: bool,
 
-    /// [UNSUPPORTED] list user's privileges or check a specific command; use twice for longer format
+    /// check a specific command; listing privileges is unsupported
     #[clap(long, short = 'l', action = ArgAction::Count)]
     pub list: u8,
 
